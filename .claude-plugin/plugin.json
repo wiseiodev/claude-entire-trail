@@ -1,0 +1,11 @@
+{
+  "name": "entire-trail",
+  "version": "0.1.0",
+  "description": "A live pane with a branch's Entire Trail: scores, gates, CI checks and findings",
+  "author": { "name": "Daniel Wise", "url": "https://github.com/wiseiodev" },
+  "homepage": "https://github.com/wiseiodev/claude-entire-trail",
+  "repository": "https://github.com/wiseiodev/claude-entire-trail",
+  "license": "MIT",
+  "keywords": ["entire", "trails", "code-review", "pane"],
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "wiseiodev",
+  "owner": { "name": "Daniel Wise", "url": "https://github.com/wiseiodev" },
+  "description": "Claude Code plugins from wiseiodev",
+  "plugins": [
+    {
+      "name": "entire-trail",
+      "source": "./",
+      "description": "A live pane with a branch's Entire Trail: scores, gates, CI checks and findings"
+    }
+  ]
+}
