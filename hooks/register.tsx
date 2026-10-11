@@ -19,6 +19,7 @@ import {
   shortSha,
   sortChecks,
   sortMonitors,
+  updatePrompt,
 } from './trail'
 
 const PANE = 'entire-trail'
@@ -37,12 +38,22 @@ const pinnedBranch = atom(
   { plugin: 'entire-trail', key: 'pinnedBranch' } as const,
   null as string | null,
 )
+// The trail being approved, so its button reads "Approving…" and ignores another press.
+const approving = atom(
+  { plugin: 'entire-trail', key: 'approving' } as const,
+  null as number | null,
+)
 
 const TONE_COLOR = { good: 'success', warn: 'warning', bad: 'error', muted: 'subtle' } as const
 const CHECK_ICON = { bad: '✕', running: '•', good: '✓', skipped: '–' } as const
 const CHECK_COLOR = { bad: 'error', running: 'warning', good: 'success', skipped: 'subtle' } as const
 
-type Poller = { refresh: (isForced?: boolean) => void; start: () => void; stop: () => void }
+type Poller = {
+  refresh: (isForced?: boolean) => void
+  start: () => void
+  stop: () => void
+  approve: (trailNumber: number) => Promise<void>
+}
 
 export const register: Register = on => {
   // Built in session.start, so its timers and the score stream run on that hook's `$`.
@@ -65,11 +76,12 @@ export const register: Register = on => {
       return JSON.parse(ran.stdout)
     }
 
-    async function sessionBranch() {
-      const pinned = await read($, pinnedBranch)
-      if (pinned) return pinned
+    // The pinned branch, else this session's; `isOwn` when it is the branch this session works on.
+    async function shownBranch() {
       const ran = await $.process.run(['git', 'branch', '--show-current'])
-      return ran.exitCode === 0 ? ran.stdout.trim() : ''
+      const own = ran.exitCode === 0 ? ran.stdout.trim() : ''
+      const branch = (await read($, pinnedBranch)) ?? own
+      return { branch, isOwn: branch !== '' && branch === own }
     }
 
     function stopWatch() {
@@ -123,7 +135,7 @@ export const register: Register = on => {
       }
       isRefreshing = true
       try {
-        const current = await sessionBranch()
+        const { branch: current, isOwn } = await shownBranch()
         if (!current) {
           stopWatch()
           branch = null
@@ -159,7 +171,13 @@ export const register: Register = on => {
           '-n',
           '50',
         ]).then(pickFindings, () => null)
-        await update($, view, (): TrailView => ({ status: 'ready', branch: current, trail, findings }))
+        await update($, view, (): TrailView => ({
+          status: 'ready',
+          branch: current,
+          isOwnBranch: isOwn,
+          trail,
+          findings,
+        }))
         if (watch?.trail !== trail.number) startWatch(trail.number)
       } catch (error) {
         $.ui.log(`trail refresh failed: ${String(error)}`, { to: 'debug' })
@@ -185,6 +203,28 @@ export const register: Register = on => {
         eventTimer?.cancel()
         ticker = null
         stopWatch()
+      },
+      approve: async trailNumber => {
+        if ((await read($, approving)) !== null) return
+        await update($, approving, () => trailNumber)
+        let failure: string | null = null
+        try {
+          const ran = await $.process.run(['entire', 'trail', 'approve', String(trailNumber)], {
+            timeoutMs: CLI_TIMEOUT_MS,
+          })
+          if (ran.exitCode !== 0) failure = (ran.stderr || ran.stdout).trim()
+        } catch (error) {
+          failure = String(error)
+        } finally {
+          await update($, approving, () => null)
+        }
+        $.ui.toast(
+          failure === null
+            ? `Approved trail #${trailNumber}.`
+            : `Entire could not approve trail #${trailNumber}: ${failure}`,
+        )
+        // Approvals emit no watch event, so the pane reads the trail again.
+        void refresh()
       },
     }
 
@@ -260,6 +300,8 @@ export const register: Register = on => {
     const open = await read($, expanded)
     const barWidth = Math.max(6, Math.min(30, e.props.bodyColumns - 36))
     const isHeadScored = scores.some(score => score.sha === trail.headSha)
+    const isApproved = trail.gates.some(gate => gate.key === 'approvals' && gate.status === 'passed')
+    const isApproving = (await read($, approving)) === trail.number
     const toggle = (key: string) =>
       update($, expanded, keys =>
         keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key],
@@ -275,7 +317,20 @@ export const register: Register = on => {
         <Text dimColor wrap="truncate-end">
           {current.branch} · {shortSha(trail.headSha)} → {trail.base}
         </Text>
-        <Box marginTop={1}>{refreshButton}</Box>
+        <Box marginTop={1} gap={1}>
+          {trail.status === 'open' &&
+            (isApproved ? (
+              <Text color="success">✓ Approved</Text>
+            ) : (
+              <Button
+                key="approve"
+                variant="primary"
+                label={isApproving ? 'Approving…' : 'Approve'}
+                onPress={() => poller?.approve(trail.number)}
+              />
+            ))}
+          {refreshButton}
+        </Box>
 
         <Box marginTop={1}>
           <Text bold>SCORES</Text>
@@ -337,16 +392,41 @@ export const register: Register = on => {
         </Box>
         {trail.gates.length === 0 && <Text dimColor>No gates reported.</Text>}
         {trail.gates.map(gate => (
-          <Box key={`gate-${gate.key}`} gap={1}>
-            <Text
-              color={
-                gate.status === 'passed' ? 'success' : gate.status === 'failed' ? 'error' : 'subtle'
-              }
-            >
-              {gate.status === 'passed' ? '✓' : gate.status === 'failed' ? '✕' : '•'}
-            </Text>
-            <Text>{(GATE_LABELS[gate.key] ?? gate.key).padEnd(11)}</Text>
-            <Text dimColor>{gate.rationale ?? gate.status}</Text>
+          <Box key={`gate-${gate.key}`} flexDirection="column">
+            <Box gap={1}>
+              <Text
+                color={
+                  gate.status === 'passed'
+                    ? 'success'
+                    : gate.status === 'failed'
+                      ? 'error'
+                      : 'subtle'
+                }
+              >
+                {gate.status === 'passed' ? '✓' : gate.status === 'failed' ? '✕' : '•'}
+              </Text>
+              <Text>{(GATE_LABELS[gate.key] ?? gate.key).padEnd(11)}</Text>
+              <Text dimColor>{gate.rationale ?? gate.status}</Text>
+            </Box>
+            {gate.key === 'up_to_date' &&
+              gate.status === 'failed' &&
+              trail.status === 'open' &&
+              current.isOwnBranch && (
+                <Box paddingLeft={2}>
+                  <Button
+                    key="update-branch"
+                    label={`Update from ${trail.base} with Claude`}
+                    onPress={() =>
+                      void $.prompt
+                        .submit({
+                          text: updatePrompt(trail, current.branch, gate.rationale),
+                          asUser: true,
+                        })
+                        .catch(error => $.ui.toast(`Claude did not get the prompt: ${String(error)}`))
+                    }
+                  />
+                </Box>
+              )}
           </Box>
         ))}
 
