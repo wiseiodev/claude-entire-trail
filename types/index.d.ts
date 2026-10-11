@@ -42,7 +42,14 @@ export type TrailView =
   | { status: 'loading'; branch: string }
   | { status: 'no-trail'; branch: string }
   | { status: 'error'; branch: string; error: string }
-  | { status: 'ready'; branch: string; trail: Trail; findings: TrailFindings | null }
+  | {
+      status: 'ready'
+      branch: string
+      // True when the branch is the one this session works on, not one pinned with /trail.
+      isOwnBranch: boolean
+      trail: Trail
+      findings: TrailFindings | null
+    }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -51,6 +58,7 @@ declare module 'claude-code' {
       monitors: Record<string, TrailMonitor>
       expanded: string[]
       pinnedBranch: string | null
+      approving: number | null
     }
   }
 }

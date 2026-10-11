@@ -155,3 +155,103 @@ test('/trail with a PR number shows the trail of that PR head branch', async ($,
   expect(await ui.find({ type: 'Link', text: 'Trail #118' })).toBeDefined()
   await ui.unmount()
 })
+
+test('one press of Approve approves the trail and the pane then shows it approved', async ($, on) => {
+  const clock = mock.clock(on)
+  const runs: string[][] = []
+  const toasts: string[] = []
+  let isApproved = false
+  const trail = () => ({
+    ...TRAIL,
+    mergeability: {
+      ...TRAIL.mergeability,
+      gates: [{ gate_key: 'approvals', status: isApproved ? 'passed' : 'failed', rationale: null }],
+    },
+  })
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    if (e.argv[0] === 'git') return ran('feature-x\n')
+    if (e.argv[2] === 'show') return ran(JSON.stringify(trail()))
+    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    if (e.argv[2] === 'approve') {
+      isApproved = true
+      return ran('')
+    }
+    return ran('', 1, 'unexpected command')
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 0, signal: null } }
+  })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  expect(await ui.find({ key: 'approve', text: 'Approve' })).toBeDefined()
+  await ui.press({ key: 'approve' })
+  await clock.settle()
+
+  expect(runs.filter(argv => argv[2] === 'approve')).toEqual([['entire', 'trail', 'approve', '118']])
+  expect(toasts).toEqual(['Approved trail #118.'])
+  expect(await ui.find({ key: 'approve' })).toBeUndefined()
+  expect(await ui.find({ text: '✓ Approved' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a behind branch gets a button that asks Claude to update it, only on its own session', async ($, on) => {
+  const clock = mock.clock(on)
+  const prompts: string[] = []
+  const behind = {
+    ...TRAIL,
+    mergeability: {
+      ...TRAIL.mergeability,
+      gates: [{ gate_key: 'up_to_date', status: 'failed', rationale: '3 commits behind main' }],
+    },
+  }
+  on('process.run', ($, e) => {
+    if (e.argv[0] === 'git') return ran('feature-x\n')
+    if (e.argv[2] === 'show') return ran(JSON.stringify(behind))
+    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    return ran('', 1, 'unexpected command')
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 0, signal: null } }
+  })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  await ui.press({ key: 'update-branch' })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain('feature-x is not up to date with main')
+  expect(prompts[0]).toContain('3 commits behind main')
+  await ui.unmount()
+
+  // A teammate's branch pinned with /trail gets no button: this session can't update it.
+  await $.command.run({
+    command: 'trail',
+    args: 'teammate-branch',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 160 },
+  })
+  await clock.settle()
+  const pinned = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  expect(await pinned.find({ text: /teammate-branch/ })).toBeDefined()
+  expect(await pinned.find({ key: 'update-branch' })).toBeUndefined()
+  await pinned.unmount()
+})
