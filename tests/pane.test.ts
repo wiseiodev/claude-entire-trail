@@ -9,6 +9,7 @@ const HEAD = '4f46aa055a70dd01026d13a5d69e306a87b3a165'
 const TRAIL = {
   number: 118,
   title: 'feat(messages): let teammates message each other',
+  body: 'Teammates can message each other from the hotel page.',
   url: 'https://entire.io/gh/analysis-ai/rate-shop/trails/118',
   status: 'open',
   base: 'main',
@@ -95,6 +96,11 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
     expect(await ui.find({ text: '1 approval(s) recorded' })).toBeDefined()
     expect(await ui.find({ text: '1 failed · 1 passed' })).toBeDefined()
     expect(await ui.find({ text: 'Hotel hard-delete throws an unhandled FK error' })).toBeDefined()
+
+    expect(await ui.find({ text: 'Teammates can message each other from the hotel page.' })).toBeUndefined()
+    await ui.press({ key: 'toggle-description' })
+    expect(await ui.find({ text: 'Teammates can message each other from the hotel page.' })).toBeDefined()
+    await ui.press({ key: 'toggle-description' })
 
     await ui.press({ key: 'toggle-confidence' })
     expect(await ui.find({ text: 'History by commit: 78% → 80%' })).toBeDefined()

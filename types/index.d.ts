@@ -29,6 +29,7 @@ export type TrailFindings = { open: number; items: TrailFinding[] }
 export type Trail = {
   number: number
   title: string
+  description: string
   url: string
   status: string
   base: string
