@@ -28,6 +28,7 @@ export function pickTrail(raw: Raw): Trail {
   return {
     number: raw.number,
     title: raw.title,
+    description: String(raw.body ?? '').trim(),
     url: raw.url,
     status: raw.status,
     base: raw.base,

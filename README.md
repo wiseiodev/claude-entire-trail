@@ -43,6 +43,8 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
 ## What the pane shows
 
 - **Header:** trail number (a link to the trail), status, title, branch, head commit, and base.
+- **Description:** the trail's description, under the Approve and Refresh buttons. Press it to open
+  or close the text. It starts closed.
 - **Approve:** approves an open trail with one press (`entire trail approve <n>`). It changes to
   **✓ Approved** once the trail's approvals gate passes.
 - **Scores:** Confidence, Risk, Security, Drift, and Loose Ends, each with a bar and the change since

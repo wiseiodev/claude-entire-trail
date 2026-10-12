@@ -331,6 +331,18 @@ export const register: Register = on => {
             ))}
           {refreshButton}
         </Box>
+        {trail.description !== '' && (
+          <Box flexDirection="column" marginTop={1}>
+            <Button key="toggle-description" plain onPress={() => toggle('description')}>
+              <Text dimColor>{open.includes('description') ? '▾' : '▸'}</Text> <Text bold>DESCRIPTION</Text>
+            </Button>
+            {open.includes('description') && (
+              <Box paddingLeft={2}>
+                <Text>{trail.description}</Text>
+              </Box>
+            )}
+          </Box>
+        )}
 
         <Box marginTop={1}>
           <Text bold>SCORES</Text>
