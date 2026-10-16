@@ -13,16 +13,23 @@ export type TrailMonitor = TrailPoint & {
   history: TrailPoint[]
 }
 
-// A runner from the repository's `.entire/runners/*.json` that reports a score.
+export type TrailRunnerMonitor = { key: string; label: string; value_type: string; polarity: string }
+
+// An enabled runner from the repository's `.entire/runners/*.json`.
 export type TrailRunner = {
+  id: string
+  name: string
   file: string
-  key: string
-  label: string
-  value_type: string
-  polarity: string
+  // The score it reports, or null for a runner that reports review comments or a summary.
+  monitor: TrailRunnerMonitor | null
 }
 
-export type TrailGate = { key: string; status: string; rationale: string | null }
+export type TrailGate = {
+  key: string
+  status: string
+  rationale: string | null
+  runnerIds: string[]
+}
 
 export type TrailCheck = { name: string; status: string; conclusion: string | null; app: string }
 
@@ -31,9 +38,13 @@ export type TrailFinding = {
   title: string
   file: string | null
   line: number | null
+  // The runner that posted it, or null for a person's finding.
+  runnerId: string | null
+  // Why it was resolved or dismissed, as recorded on the finding.
+  reason: string | null
 }
 
-export type TrailFindings = { open: number; items: TrailFinding[] }
+export type TrailFindings = { count: number; items: TrailFinding[] }
 
 export type Trail = {
   number: number
@@ -59,6 +70,7 @@ export type TrailView =
       isOwnBranch: boolean
       trail: Trail
       findings: TrailFindings | null
+      resolved: TrailFindings | null
       runners: TrailRunner[]
     }
 
@@ -68,7 +80,6 @@ declare module 'claude-code' {
       view: TrailView
       monitors: Record<string, TrailMonitor>
       expanded: string[]
-      collapsed: boolean
       pinnedBranch: string | null
       approving: number | null
     }

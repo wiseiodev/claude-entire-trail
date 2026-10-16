@@ -15,7 +15,15 @@ const TRAIL = {
   base: 'main',
   mergeability: {
     head_sha: HEAD,
-    gates: [{ gate_key: 'approvals', status: 'passed', rationale: '1 approval(s) recorded' }],
+    gates: [
+      { gate_key: 'approvals', status: 'passed', rationale: '1 approval(s) recorded' },
+      {
+        gate_key: 'findings',
+        status: 'passed',
+        rationale: 'Agent review found no blocking issues',
+        runner_ids: ['trail-comments', 'trail-review'],
+      },
+    ],
     checks: {
       runs: [
         { name: 'pnpm-ci-checks', status: 'completed', conclusion: 'success', app_name: 'GitHub Actions' },
@@ -31,7 +39,21 @@ const FINDINGS = {
     {
       severity: 'medium',
       title: 'Hotel hard-delete throws an unhandled FK error',
+      actorId: 'agent:trail-comments',
       location: { filePath: 'packages/db/src/hotels.ts', startLine: 42 },
+    },
+  ],
+}
+
+const RESOLVED = {
+  counts: { Open: 1, Resolved: 1 },
+  findings: [
+    {
+      severity: 'low',
+      body: 'The ANN-1393 comment repeats what TESTING.md records.',
+      actorId: 'agent:trail-comments',
+      statusReason: 'Fixed in 67549c1: deleted the comment.',
+      location: { filePath: 'scripts/test/shared-worker.setup.mjs', startLine: 3 },
     },
   ],
 }
@@ -80,9 +102,14 @@ const monitorRunner = (key: string, label: string, value_type: string) => ({
 
 // The files in /repo/.entire/runners: two score runners and a review runner that reports no score.
 const RUNNERS: Record<string, unknown> = {
+  'trail-comments.json': {
+    id: 'trail-comments',
+    display_name: 'Comment Review',
+    enabled: true,
+    output: { result_type: 'code_review_comments' },
+  },
   'trail-confidence.json': monitorRunner('confidence', 'Confidence', 'percent'),
   'trail-flaky-tests.json': monitorRunner('flaky_tests', 'Flaky Tests Fixed', 'boolean'),
-  'trail-review.json': { enabled: true, output: { result_type: 'code_review_comments' } },
 }
 const runnerEntries = Object.keys(RUNNERS).map(name => ({
   name,
@@ -111,7 +138,9 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
     if (e.argv[1] === 'rev-parse') return ran('/repo\n')
     if (e.argv[0] === 'git') return ran('feature-x\n')
     if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
-    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    if (e.argv[2] === 'finding') {
+      return ran(JSON.stringify(e.argv.includes('resolved') ? RESOLVED : FINDINGS))
+    }
     return ran('', 1, 'unexpected command')
   })
   on('process.spawn', async function* () {
@@ -131,6 +160,10 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
   await clock.settle()
 
   expect(runs).toContainEqual(['entire', 'trail', 'show', '--branch', 'feature-x', '--json'])
+  expect(runs).toContainEqual([
+    'entire', 'trail', 'finding', '--branch', 'feature-x', '--json', '-n', '50',
+    '--status', 'resolved', '--freshness', 'any',
+  ])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface, props: PROPS })
@@ -157,12 +190,18 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
     expect(await ui.find({ key: 'ask-flaky_tests' })).toBeUndefined()
     await ui.press({ key: 'toggle-flaky_tests' })
 
-    await ui.press({ key: 'toggle-pane' })
-    expect(await ui.find({ text: '● Confidence 80%  ● Flaky Tests Fixed —' })).toBeDefined()
-    expect(await ui.find({ key: 'toggle-confidence' })).toBeUndefined()
-    expect(await ui.find({ text: '1 approval(s) recorded' })).toBeUndefined()
-    await ui.press({ key: 'toggle-pane' })
-    expect(await ui.find({ key: 'toggle-confidence' })).toBeDefined()
+    // Review runners show by name: in their gate, and on the findings they posted.
+    expect(
+      await ui.find({ text: 'Agent review found no blocking issues · Comment Review, trail-review' }),
+    ).toBeDefined()
+    expect(await ui.find({ text: 'packages/db/src/hotels.ts:42 · Comment Review' })).toBeDefined()
+
+    expect(await ui.find({ text: '1 open · 1 resolved' })).toBeDefined()
+    expect(await ui.find({ text: 'The ANN-1393 comment repeats what TESTING.md records.' })).toBeUndefined()
+    await ui.press({ key: 'toggle-resolved' })
+    expect(await ui.find({ text: 'The ANN-1393 comment repeats what TESTING.md records.' })).toBeDefined()
+    expect(await ui.find({ text: 'Fixed in 67549c1: deleted the comment.' })).toBeDefined()
+    await ui.press({ key: 'toggle-resolved' })
     await ui.unmount()
   }
 })

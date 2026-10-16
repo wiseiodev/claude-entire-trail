@@ -43,6 +43,7 @@ export function pickTrail(raw: Raw): Trail {
       key: gate.gate_key,
       status: gate.status,
       rationale: gate.rationale ?? null,
+      runnerIds: gate.runner_ids ?? [],
     })),
     checks: (raw.mergeability?.checks?.runs ?? []).map((run: Raw) => ({
       name: run.name,
@@ -53,18 +54,24 @@ export function pickTrail(raw: Raw): Trail {
   }
 }
 
-export function pickFindings(raw: Raw): TrailFindings {
+// `count` is Entire's total for the status, which can pass the one page of items read.
+export function pickFindings(raw: Raw, status: 'Open' | 'Resolved'): TrailFindings {
   const items = (raw.findings ?? []).map((finding: Raw) => ({
     severity: finding.severity ?? 'low',
     title: finding.title || String(finding.body ?? '').split('\n')[0],
     file: finding.location?.filePath ?? null,
     line: finding.location?.startLine ?? null,
+    runnerId: /^agent:(.+)$/.exec(finding.actorId ?? '')?.[1] ?? null,
+    reason: finding.statusReason || null,
   }))
   items.sort(
     (a: Raw, b: Raw) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3),
   )
-  return { open: raw.counts?.Open ?? items.length, items }
+  return { count: raw.counts?.[status] ?? items.length, items }
 }
+
+export const runnerName = (runners: TrailRunner[], id: string) =>
+  runners.find(runner => runner.id === id)?.name ?? id
 
 /** The `monitor.updated` payload in one `entire trail watch --json` line, or whether the line was another trail event. */
 export function parseWatchLine(line: string): { monitor: Raw } | { isEvent: true } | null {
@@ -105,42 +112,48 @@ export function applyMonitor(
   }
 }
 
-/** The score runner one `.entire/runners/*.json` file defines, or null when it is off or reports no score. */
+/** The runner one `.entire/runners/*.json` file defines, or null when it is off. */
 export function pickRunner(file: string, raw: Raw): TrailRunner | null {
+  if (raw?.enabled === false) return null
+  const id: string = raw?.id ?? file.replace(/\.json$/, '')
   const monitor = raw?.output?.trail_monitor
-  if (raw?.enabled === false || raw?.output?.result_type !== 'trail_monitor' || !monitor?.key) {
-    return null
-  }
   return {
+    id,
+    name: raw?.display_name ?? id,
     file,
-    key: monitor.key,
-    label: monitor.label ?? monitor.key,
-    value_type: monitor.value_type ?? 'percent',
-    polarity: monitor.polarity ?? 'higher_is_better',
+    monitor:
+      raw?.output?.result_type === 'trail_monitor' && monitor?.key
+        ? {
+            key: monitor.key,
+            label: monitor.label ?? monitor.key,
+            value_type: monitor.value_type ?? 'percent',
+            polarity: monitor.polarity ?? 'higher_is_better',
+          }
+        : null,
   }
 }
 
-// The repository's runners in file order, each with its latest score or none yet, then any other score the stream reported.
+// The repository's score runners in file order, each with its latest score or none yet, then any other score the stream reported.
 export function scoreRows(
   runners: TrailRunner[],
   monitors: Record<string, TrailMonitor>,
 ): TrailMonitor[] {
-  const configured = runners.map(
-    (runner): TrailMonitor =>
-      monitors[runner.key] ?? {
-        key: runner.key,
-        label: runner.label,
-        value_type: runner.value_type,
-        polarity: runner.polarity,
-        sha: '',
-        percent_value: null,
-        boolean_value: null,
-        rationale: '',
-        history: [],
-      },
+  const configured = runners.flatMap(({ monitor }): TrailMonitor[] =>
+    monitor
+      ? [
+          monitors[monitor.key] ?? {
+            ...monitor,
+            sha: '',
+            percent_value: null,
+            boolean_value: null,
+            rationale: '',
+            history: [],
+          },
+        ]
+      : [],
   )
   const others = Object.values(monitors)
-    .filter(monitor => !runners.some(runner => runner.key === monitor.key))
+    .filter(monitor => !runners.some(runner => runner.monitor?.key === monitor.key))
     .sort((a, b) => a.key.localeCompare(b.key))
   return [...configured, ...others]
 }

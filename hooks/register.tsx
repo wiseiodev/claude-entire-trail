@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, Timer } from 'claude-code'
 
-import type { TrailMonitor, TrailRunner, TrailView } from '../types'
+import type { TrailFinding, TrailMonitor, TrailRunner, TrailView } from '../types'
 import {
   GATE_LABELS,
   applyMonitor,
@@ -16,6 +16,7 @@ import {
   pickRunner,
   pickTrail,
   pointValue,
+  runnerName,
   scorePrompt,
   scoreRows,
   shortSha,
@@ -35,8 +36,6 @@ const monitors = atom(
   {} as Record<string, TrailMonitor>,
 )
 const expanded = atom({ plugin: 'entire-trail', key: 'expanded' } as const, [] as string[])
-// The whole pane folded to its header and one line of scores.
-const collapsed = atom({ plugin: 'entire-trail', key: 'collapsed' } as const, false)
 const pinnedBranch = atom(
   { plugin: 'entire-trail', key: 'pinnedBranch' } as const,
   null as string | null,
@@ -185,9 +184,12 @@ export const register: Register = on => {
           return
         }
         const trail = pickTrail(shown)
-        const [findings, runners] = await Promise.all([
-          entireJson(['trail', 'finding', '--branch', current, '--json', '-n', '50']).then(
-            pickFindings,
+        const findingArgs = ['trail', 'finding', '--branch', current, '--json', '-n', '50']
+        const [findings, resolved, runners] = await Promise.all([
+          entireJson(findingArgs).then(raw => pickFindings(raw, 'Open'), () => null),
+          // A fix usually moves the code it was about, so most resolved findings are on an older code version.
+          entireJson([...findingArgs, '--status', 'resolved', '--freshness', 'any']).then(
+            raw => pickFindings(raw, 'Resolved'),
             () => null,
           ),
           readRunners().catch(() => []),
@@ -198,6 +200,7 @@ export const register: Register = on => {
           isOwnBranch: isOwn,
           trail,
           findings,
+          resolved,
           runners,
         }))
         if (watch?.trail !== trail.number) startWatch(trail.number)
@@ -317,36 +320,8 @@ export const register: Register = on => {
       )
     }
 
-    const { trail, findings, runners } = current
+    const { trail, findings, resolved, runners } = current
     const scores = scoreRows(runners, await read($, monitors))
-    const isCollapsed = await read($, collapsed)
-    const header = (
-      <Box gap={1}>
-        <Button key="toggle-pane" plain onPress={() => update($, collapsed, isShut => !isShut)}>
-          <Text dimColor>{isCollapsed ? '▸' : '▾'}</Text>
-        </Button>
-        <Link href={trail.url}>{`Trail #${trail.number}`}</Link>
-        <Text dimColor>{trail.status}</Text>
-      </Box>
-    )
-
-    if (isCollapsed) {
-      return (
-        <Box flexDirection="column">
-          {header}
-          <Text>
-            {scores.map((score, index) => (
-              <Text>
-                {index > 0 ? '  ' : ''}
-                <Text color={TONE_COLOR[monitorTone(score)]}>●</Text> {score.label}{' '}
-                <Text bold>{pointValue(score.value_type, score)}</Text>
-              </Text>
-            ))}
-          </Text>
-        </Box>
-      )
-    }
-
     const open = await read($, expanded)
     const labelWidth = Math.max(0, ...scores.map(score => score.label.length))
     // What the row leaves for the bar after the toggle, dot, label, delta, value and spaces.
@@ -362,7 +337,10 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {header}
+        <Box gap={1}>
+          <Link href={trail.url}>{`Trail #${trail.number}`}</Link>
+          <Text dimColor>{trail.status}</Text>
+        </Box>
         <Text bold>{trail.title}</Text>
         <Text dimColor wrap="truncate-end">
           {current.branch} · {shortSha(trail.headSha)} → {trail.base}
@@ -448,7 +426,8 @@ export const register: Register = on => {
                             text: scorePrompt(
                               score,
                               trail.number,
-                              runners.find(runner => runner.key === score.key)?.file ?? null,
+                              runners.find(runner => runner.monitor?.key === score.key)?.file ??
+                                null,
                             ),
                           })
                         }
@@ -479,8 +458,15 @@ export const register: Register = on => {
               >
                 {gate.status === 'passed' ? '✓' : gate.status === 'failed' ? '✕' : '•'}
               </Text>
-              <Text>{(GATE_LABELS[gate.key] ?? gate.key).padEnd(11)}</Text>
-              <Text dimColor>{gate.rationale ?? gate.status}</Text>
+              <Box width={11} flexShrink={0}>
+                <Text>{GATE_LABELS[gate.key] ?? gate.key}</Text>
+              </Box>
+              <Text dimColor>
+                {gate.rationale ?? gate.status}
+                {gate.runnerIds.length > 0
+                  ? ` · ${gate.runnerIds.map(id => runnerName(runners, id)).join(', ')}`
+                  : ''}
+              </Text>
             </Box>
             {gate.key === 'up_to_date' &&
               gate.status === 'failed' &&
@@ -526,27 +512,51 @@ export const register: Register = on => {
 
         <Box marginTop={1} gap={2}>
           <Text bold>FINDINGS</Text>
-          <Text dimColor>{findings ? `${findings.open} open` : 'unavailable'}</Text>
+          <Text dimColor>
+            {findings ? `${findings.count} open` : 'unavailable'}
+            {resolved && resolved.count > 0 ? ` · ${resolved.count} resolved` : ''}
+          </Text>
         </Box>
         {findings && findings.items.length === 0 && <Text dimColor>No open findings.</Text>}
-        {findings?.items.map((finding, index) => (
-          <Box key={`finding-${index}`} flexDirection="column">
-            <Text>
-              <Text color={finding.severity === 'high' ? 'error' : 'warning'}>
-                {finding.severity}
-              </Text>{' '}
-              <Text dimColor>
-                {finding.file
-                  ? `${finding.file}${finding.line ? `:${finding.line}` : ''}`
-                  : 'General'}
-              </Text>
-            </Text>
-            <Box paddingLeft={2}>
-              <Text>{finding.title}</Text>
-            </Box>
+        {findings?.items.map((finding, index) => findingRow(finding, `finding-${index}`, false))}
+        {resolved && resolved.items.length > 0 && (
+          <Box flexDirection="column">
+            <Button key="toggle-resolved" plain onPress={() => toggle('resolved')}>
+              <Text dimColor>{open.includes('resolved') ? '▾' : '▸'}</Text> {resolved.count} resolved
+            </Button>
+            {open.includes('resolved') &&
+              resolved.items.map((finding, index) =>
+                findingRow(finding, `resolved-${index}`, true),
+              )}
           </Box>
-        ))}
+        )}
       </Box>
     )
+
+    function findingRow(finding: TrailFinding, key: string, isResolved: boolean) {
+      return (
+        <Box key={key} flexDirection="column" paddingLeft={isResolved ? 2 : 0}>
+          <Text>
+            {isResolved ? (
+              <Text color="success">✓</Text>
+            ) : (
+              <Text color={finding.severity === 'high' ? 'error' : 'warning'}>
+                {finding.severity}
+              </Text>
+            )}{' '}
+            <Text dimColor>
+              {finding.file
+                ? `${finding.file}${finding.line ? `:${finding.line}` : ''}`
+                : 'General'}
+              {finding.runnerId ? ` · ${runnerName(runners, finding.runnerId)}` : ''}
+            </Text>
+          </Text>
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text dimColor={isResolved}>{finding.title}</Text>
+            {isResolved && finding.reason && <Text dimColor>{finding.reason}</Text>}
+          </Box>
+        </Box>
+      )
+    }
   })
 }
