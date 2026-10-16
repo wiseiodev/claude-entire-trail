@@ -13,6 +13,15 @@ export type TrailMonitor = TrailPoint & {
   history: TrailPoint[]
 }
 
+// A runner from the repository's `.entire/runners/*.json` that reports a score.
+export type TrailRunner = {
+  file: string
+  key: string
+  label: string
+  value_type: string
+  polarity: string
+}
+
 export type TrailGate = { key: string; status: string; rationale: string | null }
 
 export type TrailCheck = { name: string; status: string; conclusion: string | null; app: string }
@@ -50,6 +59,7 @@ export type TrailView =
       isOwnBranch: boolean
       trail: Trail
       findings: TrailFindings | null
+      runners: TrailRunner[]
     }
 
 declare module 'claude-code' {
@@ -58,6 +68,7 @@ declare module 'claude-code' {
       view: TrailView
       monitors: Record<string, TrailMonitor>
       expanded: string[]
+      collapsed: boolean
       pinnedBranch: string | null
       approving: number | null
     }
