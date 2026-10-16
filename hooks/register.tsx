@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, Timer } from 'claude-code'
 
-import type { TrailMonitor, TrailView } from '../types'
+import type { TrailFinding, TrailMonitor, TrailRunner, TrailView } from '../types'
 import {
   GATE_LABELS,
   applyMonitor,
@@ -13,12 +13,14 @@ import {
   monitorTone,
   parseWatchLine,
   pickFindings,
+  pickRunner,
   pickTrail,
   pointValue,
+  runnerName,
   scorePrompt,
+  scoreRows,
   shortSha,
   sortChecks,
-  sortMonitors,
   updatePrompt,
 } from './trail'
 
@@ -82,6 +84,26 @@ export const register: Register = on => {
       const own = ran.exitCode === 0 ? ran.stdout.trim() : ''
       const branch = (await read($, pinnedBranch)) ?? own
       return { branch, isOwn: branch !== '' && branch === own }
+    }
+
+    // Read on every refresh, so a runner added or edited in this checkout shows without a restart.
+    async function readRunners(): Promise<TrailRunner[]> {
+      const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+      if (top.exitCode !== 0) return []
+      const dir = `${top.stdout.trim()}/.entire/runners`
+      const files = (await $.fs.list(dir))
+        .filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
+        .map(entry => entry.name)
+        .sort()
+      const runners = await Promise.all(
+        files.map(file =>
+          $.fs
+            .read(`${dir}/${file}`)
+            .then(text => pickRunner(file, JSON.parse(text)))
+            .catch(() => null),
+        ),
+      )
+      return runners.filter(runner => runner !== null)
     }
 
     function stopWatch() {
@@ -162,21 +184,24 @@ export const register: Register = on => {
           return
         }
         const trail = pickTrail(shown)
-        const findings = await entireJson([
-          'trail',
-          'finding',
-          '--branch',
-          current,
-          '--json',
-          '-n',
-          '50',
-        ]).then(pickFindings, () => null)
+        const findingArgs = ['trail', 'finding', '--branch', current, '--json', '-n', '50']
+        const [findings, resolved, runners] = await Promise.all([
+          entireJson(findingArgs).then(raw => pickFindings(raw, 'Open'), () => null),
+          // A fix usually moves the code it was about, so most resolved findings are on an older code version.
+          entireJson([...findingArgs, '--status', 'resolved', '--freshness', 'any']).then(
+            raw => pickFindings(raw, 'Resolved'),
+            () => null,
+          ),
+          readRunners().catch(() => []),
+        ])
         await update($, view, (): TrailView => ({
           status: 'ready',
           branch: current,
           isOwnBranch: isOwn,
           trail,
           findings,
+          resolved,
+          runners,
         }))
         if (watch?.trail !== trail.number) startWatch(trail.number)
       } catch (error) {
@@ -295,10 +320,13 @@ export const register: Register = on => {
       )
     }
 
-    const { trail, findings } = current
-    const scores = sortMonitors(await read($, monitors))
+    const { trail, findings, resolved, runners } = current
+    const scores = scoreRows(runners, await read($, monitors))
     const open = await read($, expanded)
-    const barWidth = Math.max(6, Math.min(30, e.props.bodyColumns - 36))
+    const labelWidth = Math.max(0, ...scores.map(score => score.label.length))
+    // What the row leaves for the bar after the toggle, dot, label, delta, value and spaces.
+    const barWidth = Math.max(6, Math.min(30, e.props.bodyColumns - 25 - labelWidth))
+    const isScored = scores.some(score => score.history.length > 0)
     const isHeadScored = scores.some(score => score.sha === trail.headSha)
     const isApproved = trail.gates.some(gate => gate.key === 'approvals' && gate.status === 'passed')
     const isApproving = (await read($, approving)) === trail.number
@@ -347,8 +375,8 @@ export const register: Register = on => {
         <Box marginTop={1}>
           <Text bold>SCORES</Text>
         </Box>
-        {scores.length === 0 && <Text dimColor>No runner scores yet.</Text>}
-        {scores.length > 0 && !isHeadScored && (
+        {!isScored && <Text dimColor>No runner scores yet.</Text>}
+        {isScored && !isHeadScored && (
           <Text dimColor>
             Runners haven't scored {shortSha(trail.headSha)} yet. Showing the last scores.
           </Text>
@@ -365,7 +393,7 @@ export const register: Register = on => {
             <Box key={`score-${score.key}`} flexDirection="column">
               <Button key={`toggle-${score.key}`} plain onPress={() => toggle(score.key)}>
                 <Text dimColor>{isOpen ? '▾' : '▸'}</Text> <Text color={tone}>●</Text>{' '}
-                {score.label.padEnd(11)} <Text color={tone}>{'█'.repeat(filled)}</Text>
+                {score.label.padEnd(labelWidth)} <Text color={tone}>{'█'.repeat(filled)}</Text>
                 <Text dimColor>{'░'.repeat(barWidth - filled)}</Text>{' '}
                 <Text color={delta?.isImproved ? 'success' : 'error'}>
                   {(delta?.text ?? '').padStart(7)}
@@ -374,10 +402,14 @@ export const register: Register = on => {
               </Button>
               {isOpen && (
                 <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
-                  <Text>
-                    {score.rationale}
-                    {score.sha !== trail.headSha ? ` (${shortSha(score.sha)})` : ''}
-                  </Text>
+                  {score.history.length === 0 ? (
+                    <Text dimColor>This runner hasn't scored the trail yet.</Text>
+                  ) : (
+                    <Text>
+                      {score.rationale}
+                      {score.sha !== trail.headSha ? ` (${shortSha(score.sha)})` : ''}
+                    </Text>
+                  )}
                   {score.history.length > 1 && (
                     <Text dimColor>
                       History by commit:{' '}
@@ -389,7 +421,16 @@ export const register: Register = on => {
                       <Button
                         key={`ask-${score.key}`}
                         label={askVerb(score)}
-                        onPress={() => $.prompt.fill({ text: scorePrompt(score, trail.number) })}
+                        onPress={() =>
+                          $.prompt.fill({
+                            text: scorePrompt(
+                              score,
+                              trail.number,
+                              runners.find(runner => runner.monitor?.key === score.key)?.file ??
+                                null,
+                            ),
+                          })
+                        }
                       />
                     </Box>
                   )}
@@ -417,8 +458,15 @@ export const register: Register = on => {
               >
                 {gate.status === 'passed' ? '✓' : gate.status === 'failed' ? '✕' : '•'}
               </Text>
-              <Text>{(GATE_LABELS[gate.key] ?? gate.key).padEnd(11)}</Text>
-              <Text dimColor>{gate.rationale ?? gate.status}</Text>
+              <Box width={11} flexShrink={0}>
+                <Text>{GATE_LABELS[gate.key] ?? gate.key}</Text>
+              </Box>
+              <Text dimColor>
+                {gate.rationale ?? gate.status}
+                {gate.runnerIds.length > 0
+                  ? ` · ${gate.runnerIds.map(id => runnerName(runners, id)).join(', ')}`
+                  : ''}
+              </Text>
             </Box>
             {gate.key === 'up_to_date' &&
               gate.status === 'failed' &&
@@ -464,27 +512,51 @@ export const register: Register = on => {
 
         <Box marginTop={1} gap={2}>
           <Text bold>FINDINGS</Text>
-          <Text dimColor>{findings ? `${findings.open} open` : 'unavailable'}</Text>
+          <Text dimColor>
+            {findings ? `${findings.count} open` : 'unavailable'}
+            {resolved && resolved.count > 0 ? ` · ${resolved.count} resolved` : ''}
+          </Text>
         </Box>
         {findings && findings.items.length === 0 && <Text dimColor>No open findings.</Text>}
-        {findings?.items.map((finding, index) => (
-          <Box key={`finding-${index}`} flexDirection="column">
-            <Text>
-              <Text color={finding.severity === 'high' ? 'error' : 'warning'}>
-                {finding.severity}
-              </Text>{' '}
-              <Text dimColor>
-                {finding.file
-                  ? `${finding.file}${finding.line ? `:${finding.line}` : ''}`
-                  : 'General'}
-              </Text>
-            </Text>
-            <Box paddingLeft={2}>
-              <Text>{finding.title}</Text>
-            </Box>
+        {findings?.items.map((finding, index) => findingRow(finding, `finding-${index}`, false))}
+        {resolved && resolved.items.length > 0 && (
+          <Box flexDirection="column">
+            <Button key="toggle-resolved" plain onPress={() => toggle('resolved')}>
+              <Text dimColor>{open.includes('resolved') ? '▾' : '▸'}</Text> {resolved.count} resolved
+            </Button>
+            {open.includes('resolved') &&
+              resolved.items.map((finding, index) =>
+                findingRow(finding, `resolved-${index}`, true),
+              )}
           </Box>
-        ))}
+        )}
       </Box>
     )
+
+    function findingRow(finding: TrailFinding, key: string, isResolved: boolean) {
+      return (
+        <Box key={key} flexDirection="column" paddingLeft={isResolved ? 2 : 0}>
+          <Text>
+            {isResolved ? (
+              <Text color="success">✓</Text>
+            ) : (
+              <Text color={finding.severity === 'high' ? 'error' : 'warning'}>
+                {finding.severity}
+              </Text>
+            )}{' '}
+            <Text dimColor>
+              {finding.file
+                ? `${finding.file}${finding.line ? `:${finding.line}` : ''}`
+                : 'General'}
+              {finding.runnerId ? ` · ${runnerName(runners, finding.runnerId)}` : ''}
+            </Text>
+          </Text>
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text dimColor={isResolved}>{finding.title}</Text>
+            {isResolved && finding.reason && <Text dimColor>{finding.reason}</Text>}
+          </Box>
+        </Box>
+      )
+    }
   })
 }

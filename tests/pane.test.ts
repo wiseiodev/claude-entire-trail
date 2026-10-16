@@ -15,7 +15,15 @@ const TRAIL = {
   base: 'main',
   mergeability: {
     head_sha: HEAD,
-    gates: [{ gate_key: 'approvals', status: 'passed', rationale: '1 approval(s) recorded' }],
+    gates: [
+      { gate_key: 'approvals', status: 'passed', rationale: '1 approval(s) recorded' },
+      {
+        gate_key: 'findings',
+        status: 'passed',
+        rationale: 'Agent review found no blocking issues',
+        runner_ids: ['trail-comments', 'trail-review'],
+      },
+    ],
     checks: {
       runs: [
         { name: 'pnpm-ci-checks', status: 'completed', conclusion: 'success', app_name: 'GitHub Actions' },
@@ -31,7 +39,21 @@ const FINDINGS = {
     {
       severity: 'medium',
       title: 'Hotel hard-delete throws an unhandled FK error',
+      actorId: 'agent:trail-comments',
       location: { filePath: 'packages/db/src/hotels.ts', startLine: 42 },
+    },
+  ],
+}
+
+const RESOLVED = {
+  counts: { Open: 1, Resolved: 1 },
+  findings: [
+    {
+      severity: 'low',
+      body: 'The ANN-1393 comment repeats what TESTING.md records.',
+      actorId: 'agent:trail-comments',
+      statusReason: 'Fixed in 67549c1: deleted the comment.',
+      location: { filePath: 'scripts/test/shared-worker.setup.mjs', startLine: 3 },
     },
   ],
 }
@@ -53,6 +75,51 @@ const confidence = (sha: string, percent: number) =>
     },
   })
 
+const flakyTests = (sha: string, isFixed: boolean) =>
+  JSON.stringify({
+    data: {
+      event_type: 'monitor.updated',
+      payload: {
+        monitor_key: 'flaky_tests',
+        label: 'Flaky Tests Fixed',
+        value_type: 'boolean',
+        polarity: 'higher_is_better',
+        percent_value: null,
+        boolean_value: isFixed,
+        rationale: 'A retry still hides the timing race in sync.test.ts.',
+        head_sha: sha,
+      },
+    },
+  })
+
+const monitorRunner = (key: string, label: string, value_type: string) => ({
+  enabled: true,
+  output: {
+    result_type: 'trail_monitor',
+    trail_monitor: { key, label, value_type, polarity: 'higher_is_better' },
+  },
+})
+
+// The files in /repo/.entire/runners: two score runners and a review runner that reports no score.
+const RUNNERS: Record<string, unknown> = {
+  'trail-comments.json': {
+    id: 'trail-comments',
+    display_name: 'Comment Review',
+    enabled: true,
+    output: { result_type: 'code_review_comments' },
+  },
+  'trail-confidence.json': monitorRunner('confidence', 'Confidence', 'percent'),
+  'trail-flaky-tests.json': monitorRunner('flaky_tests', 'Flaky Tests Fixed', 'boolean'),
+}
+const runnerEntries = Object.keys(RUNNERS).map(name => ({
+  name,
+  kind: 'file' as const,
+  size: 1,
+  mtimeMs: 0,
+  isLink: false,
+}))
+const runnerText = (path: string) => JSON.stringify(RUNNERS[path.split('/').pop() ?? ''])
+
 const PANE = { plugin: 'entire-trail', component: 'Pane', requestId: 'entire-trail' } as const
 const PROPS = {
   title: 'Entire Trail',
@@ -68,9 +135,12 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
   const runs: string[][] = []
   on('process.run', ($, e) => {
     runs.push([...e.argv])
+    if (e.argv[1] === 'rev-parse') return ran('/repo\n')
     if (e.argv[0] === 'git') return ran('feature-x\n')
     if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
-    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    if (e.argv[2] === 'finding') {
+      return ran(JSON.stringify(e.argv.includes('resolved') ? RESOLVED : FINDINGS))
+    }
     return ran('', 1, 'unexpected command')
   })
   on('process.spawn', async function* () {
@@ -80,6 +150,8 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
     yield { stream: 'stdout' as const, text: lines.slice(50) }
     return { value: { code: 0, signal: null } }
   })
+  on('fs.list', () => ({ value: runnerEntries }))
+  on('fs.read', ($, e) => ({ value: runnerText(e.path) }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -88,6 +160,10 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
   await clock.settle()
 
   expect(runs).toContainEqual(['entire', 'trail', 'show', '--branch', 'feature-x', '--json'])
+  expect(runs).toContainEqual([
+    'entire', 'trail', 'finding', '--branch', 'feature-x', '--json', '-n', '50',
+    '--status', 'resolved', '--freshness', 'any',
+  ])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface, props: PROPS })
@@ -106,8 +182,65 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
     expect(await ui.find({ text: 'History by commit: 78% → 80%' })).toBeDefined()
     expect(await ui.find({ key: 'ask-confidence', text: 'Raise this with Claude' })).toBeDefined()
     await ui.press({ key: 'toggle-confidence' })
+
+    // A runner in .entire/runners that has not reported yet still gets its row.
+    expect(await ui.find({ key: 'toggle-flaky_tests', text: /Flaky Tests Fixed.*—/ })).toBeDefined()
+    await ui.press({ key: 'toggle-flaky_tests' })
+    expect(await ui.find({ text: "This runner hasn't scored the trail yet." })).toBeDefined()
+    expect(await ui.find({ key: 'ask-flaky_tests' })).toBeUndefined()
+    await ui.press({ key: 'toggle-flaky_tests' })
+
+    // Review runners show by name: in their gate, and on the findings they posted.
+    expect(
+      await ui.find({ text: 'Agent review found no blocking issues · Comment Review, trail-review' }),
+    ).toBeDefined()
+    expect(await ui.find({ text: 'packages/db/src/hotels.ts:42 · Comment Review' })).toBeDefined()
+
+    expect(await ui.find({ text: '1 open · 1 resolved' })).toBeDefined()
+    expect(await ui.find({ text: 'The ANN-1393 comment repeats what TESTING.md records.' })).toBeUndefined()
+    await ui.press({ key: 'toggle-resolved' })
+    expect(await ui.find({ text: 'The ANN-1393 comment repeats what TESTING.md records.' })).toBeDefined()
+    expect(await ui.find({ text: 'Fixed in 67549c1: deleted the comment.' })).toBeDefined()
+    await ui.press({ key: 'toggle-resolved' })
     await ui.unmount()
   }
+})
+
+test("a score's Claude prompt is worded from its runner and names the runner's file", async ($, on) => {
+  const clock = mock.clock(on)
+  const prompts: string[] = []
+  on('process.run', ($, e) => {
+    if (e.argv[1] === 'rev-parse') return ran('/repo\n')
+    if (e.argv[0] === 'git') return ran('feature-x\n')
+    if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
+    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    return ran('', 1, 'unexpected command')
+  })
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout' as const, text: `${flakyTests(HEAD, false)}\n` }
+    return { value: { code: 0, signal: null } }
+  })
+  on('fs.list', () => ({ value: runnerEntries }))
+  on('fs.read', ($, e) => ({ value: runnerText(e.path) }))
+  on('prompt.fill', ($, e) => {
+    prompts.push(e.text)
+    return { isFilled: true }
+  })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  await ui.press({ key: 'toggle-flaky_tests' })
+  await ui.press({ key: 'ask-flaky_tests' })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain("Flaky Tests Fixed runner answered No on 4f46aa0. Change this branch so it answers Yes")
+  expect(prompts[0]).toContain('Read .entire/runners/trail-flaky-tests.json for what the runner checks.')
+  expect(prompts[0]).toContain('A retry still hides the timing race in sync.test.ts.')
+  await ui.unmount()
 })
 
 test('a branch with no trail says so', async ($, on) => {

@@ -47,12 +47,22 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
   or close the text. It starts closed.
 - **Approve:** approves an open trail with one press (`entire trail approve <n>`). It changes to
   **✓ Approved** once the trail's approvals gate passes.
-- **Scores:** Confidence, Risk, Security, Drift, and Loose Ends, each with a bar and the change since
-  the previous scored commit. Press a score to read the runner's notes and its history by commit.
+- **Scores:** one row for each runner in the repository's `.entire/runners/*.json` that reports a
+  score, in file-name order. Each row has a bar or a Yes or No, and the change since the previous
+  scored commit. A runner that has not scored yet shows —. The pane reads the runner files again on
+  each refresh, so a runner you add shows without a restart. Press a score to read the runner's notes
+  and its history by commit.
 - **Raise or lower a score with Claude:** a button under an open score that can still improve. It puts
-  a prompt with the runner's notes in your input box. Read it, then press Enter to send it.
+  a prompt with the runner's notes in your input box. The prompt follows the runner's value type and
+  polarity, and names the runner's file so Claude reads what the runner checks. Read it, then press
+  Enter to send it.
 - **Gates, Checks, Findings:** the trail's gates, every CI check (failures first), and open agent
-  findings with file and line.
+  findings with file and line. A gate that review runners decide, such as **Findings**, names those
+  runners, and each finding names the runner that posted it. The names come from each runner file's
+  `display_name`.
+- **Resolved findings:** press **▸ N resolved** under the open findings to read the resolved ones,
+  each with the note it was resolved with. These include findings on earlier commits, because a fix
+  usually changes the code a finding was about.
 - **Update from main with Claude:** shows under a failed **Up to date** gate on your session's own
   branch. It sends Claude a prompt to bring the base branch in and resolve conflicts, using a
   `sync-main` skill when the repository has one. A teammate's branch shown with `/trail` gets no
