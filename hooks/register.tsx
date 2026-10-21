@@ -1,16 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, Timer } from 'claude-code'
 
-import type { TrailFinding, TrailMonitor, TrailRunner, TrailView } from '../types'
+import type { Trail, TrailFinding, TrailMonitor, TrailRunner, TrailView } from '../types'
 import {
   GATE_LABELS,
+  NO_TRAIL,
   applyMonitor,
   askVerb,
+  changeInList,
+  changeOnBranch,
   checkTone,
   checksSummary,
   isImprovable,
   monitorDelta,
   monitorTone,
+  parseRemote,
   parseWatchLine,
   pickFindings,
   pickRunner,
@@ -54,8 +58,13 @@ type Poller = {
   refresh: (isForced?: boolean) => void
   start: () => void
   stop: () => void
-  approve: (trailNumber: number) => Promise<void>
+  approve: (trail: Trail) => Promise<void>
 }
+
+type Repo = { owner: string; name: string }
+
+// Entire's API for one repository's trails, which `entire api` signs in to.
+const trailsPath = (repo: Repo) => `/api/v1/trails/gh/${repo.owner}/${repo.name}`
 
 export const register: Register = on => {
   // Built in session.start, so its timers and the score stream run on that hook's `$`.
@@ -64,7 +73,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     let branch: string | null = null
-    let watch: { trail: number; stop: () => void } | null = null
+    let watch: { trail: string; stop: () => void } | null = null
     let ticker: Timer | null = null
     let eventTimer: Timer | null = null
     let isRefreshing = false
@@ -84,6 +93,24 @@ export const register: Register = on => {
       const own = ran.exitCode === 0 ? ran.stdout.trim() : ''
       const branch = (await read($, pinnedBranch)) ?? own
       return { branch, isOwn: branch !== '' && branch === own }
+    }
+
+    async function originRepo() {
+      const ran = await $.process.run(['git', 'remote', 'get-url', 'origin'])
+      return ran.exitCode === 0 ? parseRemote(ran.stdout) : null
+    }
+
+    // The branch's change: through its project trail, else the repository's trail list, which still names merged work's branch.
+    async function findChange(branch: string, repo: Repo): Promise<number | null> {
+      try {
+        const project = await entireJson(['trail', 'show', '--branch', branch, '--json'])
+        const number = changeOnBranch(project, repo.name, branch)
+        if (number !== null) return number
+      } catch (error) {
+        if (!NO_TRAIL.test(String(error))) throw error
+      }
+      const listed = await entireJson(['api', '--to', 'cell', `${trailsPath(repo)}?per_page=100`])
+      return changeInList(listed, branch)
     }
 
     // Read on every refresh, so a runner added or edited in this checkout shows without a restart.
@@ -112,12 +139,12 @@ export const register: Register = on => {
     }
 
     // `entire trail watch` replays every score from the start, then streams new ones as runners report.
-    function startWatch(trailNumber: number) {
+    function startWatch(selector: string) {
       stopWatch()
       const child = $.process.spawn({
-        argv: ['entire', 'trail', 'watch', String(trailNumber), '--json'],
+        argv: ['entire', 'trail', 'watch', selector, '--json'],
       })
-      const current = { trail: trailNumber, stop: () => void child.return({ code: null, signal: null }) }
+      const current = { trail: selector, stop: () => void child.return({ code: null, signal: null }) }
       watch = current
       void (async () => {
         let buffer = ''
@@ -170,21 +197,30 @@ export const register: Register = on => {
           await update($, monitors, () => ({}))
           await update($, view, (): TrailView => ({ status: 'loading', branch: current }))
         }
-        let shown: unknown
+        let trail: Trail | null
         try {
-          shown = await entireJson(['trail', 'show', '--branch', current, '--json'])
+          const repo = await originRepo()
+          if (!repo) throw new Error('this checkout has no GitHub origin remote')
+          const number = await findChange(current, repo)
+          trail =
+            number === null
+              ? null
+              : pickTrail(
+                  await entireJson(['api', '--to', 'cell', `${trailsPath(repo)}/${number}`]),
+                  repo.name,
+                )
         } catch (error) {
           stopWatch()
           const message = error instanceof Error ? error.message : String(error)
-          await update($, view, (): TrailView =>
-            /no trail found/i.test(message)
-              ? { status: 'no-trail', branch: current }
-              : { status: 'error', branch: current, error: message },
-          )
+          await update($, view, (): TrailView => ({ status: 'error', branch: current, error: message }))
           return
         }
-        const trail = pickTrail(shown)
-        const findingArgs = ['trail', 'finding', '--branch', current, '--json', '-n', '50']
+        if (!trail) {
+          stopWatch()
+          await update($, view, (): TrailView => ({ status: 'no-trail', branch: current }))
+          return
+        }
+        const findingArgs = ['trail', 'finding', 'list', trail.selector, '--json', '-n', '50']
         const [findings, resolved, runners] = await Promise.all([
           entireJson(findingArgs).then(raw => pickFindings(raw, 'Open'), () => null),
           // A fix usually moves the code it was about, so most resolved findings are on an older code version.
@@ -203,7 +239,7 @@ export const register: Register = on => {
           resolved,
           runners,
         }))
-        if (watch?.trail !== trail.number) startWatch(trail.number)
+        if (watch?.trail !== trail.selector) startWatch(trail.selector)
       } catch (error) {
         $.ui.log(`trail refresh failed: ${String(error)}`, { to: 'debug' })
       } finally {
@@ -229,12 +265,12 @@ export const register: Register = on => {
         ticker = null
         stopWatch()
       },
-      approve: async trailNumber => {
+      approve: async ({ number: trailNumber, selector }) => {
         if ((await read($, approving)) !== null) return
         await update($, approving, () => trailNumber)
         let failure: string | null = null
         try {
-          const ran = await $.process.run(['entire', 'trail', 'approve', String(trailNumber)], {
+          const ran = await $.process.run(['entire', 'trail', 'approve', selector], {
             timeoutMs: CLI_TIMEOUT_MS,
           })
           if (ran.exitCode !== 0) failure = (ran.stderr || ran.stdout).trim()
@@ -354,7 +390,7 @@ export const register: Register = on => {
                 key="approve"
                 variant="primary"
                 label={isApproving ? 'Approving…' : 'Approve'}
-                onPress={() => poller?.approve(trail.number)}
+                onPress={() => poller?.approve(trail)}
               />
             ))}
           {refreshButton}

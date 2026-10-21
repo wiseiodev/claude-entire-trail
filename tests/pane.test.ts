@@ -6,10 +6,18 @@ const ran = (stdout: string, exitCode = 0, stderr = '') => ({
 
 const HEAD = '4f46aa055a70dd01026d13a5d69e306a87b3a165'
 
+const REMOTE = 'git@github.com:analysis-ai/rate-shop.git\n'
+const DETAIL = '/api/v1/trails/gh/analysis-ai/rate-shop/118'
+
+// `entire trail show --branch` reads the project trail, which lists each repository's change.
+const project = (branch: string) =>
+  JSON.stringify({ number: 140, changes: [{ repository: 'rate-shop', number: 118, branch, status: 'open' }] })
+
+// The change's detail, as `entire api` reads it.
 const TRAIL = {
   number: 118,
   title: 'feat(messages): let teammates message each other',
-  body: 'Teammates can message each other from the hotel page.',
+  body_document: { text_snapshot: 'Teammates can message each other from the hotel page.' },
   url: 'https://entire.io/gh/analysis-ai/rate-shop/trails/118',
   status: 'open',
   base: 'main',
@@ -136,14 +144,18 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
   on('process.run', ($, e) => {
     runs.push([...e.argv])
     if (e.argv[1] === 'rev-parse') return ran('/repo\n')
+    if (e.argv[1] === 'remote') return ran(REMOTE)
     if (e.argv[0] === 'git') return ran('feature-x\n')
-    if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
+    if (e.argv[2] === 'show') return ran(project('feature-x'))
+    if (e.argv[1] === 'api') return ran(JSON.stringify(TRAIL))
     if (e.argv[2] === 'finding') {
       return ran(JSON.stringify(e.argv.includes('resolved') ? RESOLVED : FINDINGS))
     }
     return ran('', 1, 'unexpected command')
   })
-  on('process.spawn', async function* () {
+  const spawned: string[][] = []
+  on('process.spawn', async function* ($, e) {
+    spawned.push([...e.argv])
     // One chunk ends mid-line, as a real pipe can.
     const lines = `${confidence('1bd0835', 78)}\n${confidence(HEAD, 80)}\n`
     yield { stream: 'stdout' as const, text: lines.slice(0, 50) }
@@ -160,10 +172,12 @@ test("the pane shows the branch's trail, scores, gates, checks and findings", as
   await clock.settle()
 
   expect(runs).toContainEqual(['entire', 'trail', 'show', '--branch', 'feature-x', '--json'])
+  expect(runs).toContainEqual(['entire', 'api', '--to', 'cell', DETAIL])
   expect(runs).toContainEqual([
-    'entire', 'trail', 'finding', '--branch', 'feature-x', '--json', '-n', '50',
+    'entire', 'trail', 'finding', 'list', 'rate-shop/118', '--json', '-n', '50',
     '--status', 'resolved', '--freshness', 'any',
   ])
+  expect(spawned).toEqual([['entire', 'trail', 'watch', 'rate-shop/118', '--json']])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface, props: PROPS })
@@ -211,8 +225,10 @@ test("a score's Claude prompt is worded from its runner and names the runner's f
   const prompts: string[] = []
   on('process.run', ($, e) => {
     if (e.argv[1] === 'rev-parse') return ran('/repo\n')
+    if (e.argv[1] === 'remote') return ran(REMOTE)
     if (e.argv[0] === 'git') return ran('feature-x\n')
-    if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
+    if (e.argv[2] === 'show') return ran(project('feature-x'))
+    if (e.argv[1] === 'api') return ran(JSON.stringify(TRAIL))
     if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
     return ran('', 1, 'unexpected command')
   })
@@ -245,9 +261,12 @@ test("a score's Claude prompt is worded from its runner and names the runner's f
 
 test('a branch with no trail says so', async ($, on) => {
   const clock = mock.clock(on)
-  on('process.run', ($, e) =>
-    e.argv[0] === 'git' ? ran('no-trail-branch\n') : ran('', 1, 'Error: no trail found for branch'),
-  )
+  on('process.run', ($, e) => {
+    if (e.argv[1] === 'remote') return ran(REMOTE)
+    if (e.argv[0] === 'git') return ran('no-trail-branch\n')
+    if (e.argv[1] === 'api') return ran(JSON.stringify({ items: [] }))
+    return ran('', 1, 'branch "no-trail-branch" has no discoverable project trail')
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -265,9 +284,11 @@ test('/trail with a PR number shows the trail of that PR head branch', async ($,
   const runs: string[][] = []
   on('process.run', ($, e) => {
     runs.push([...e.argv])
+    if (e.argv[1] === 'remote') return ran(REMOTE)
     if (e.argv[0] === 'git') return ran('Claude-Code-Mod\n')
     if (e.argv[0] === 'gh') return ran('ann-1266-team-messaging\n')
-    if (e.argv[2] === 'show') return ran(JSON.stringify(TRAIL))
+    if (e.argv[2] === 'show') return ran(project('ann-1266-team-messaging'))
+    if (e.argv[1] === 'api') return ran(JSON.stringify(TRAIL))
     if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
     return ran('', 1, 'unexpected command')
   })
@@ -309,8 +330,10 @@ test('one press of Approve approves the trail and the pane then shows it approve
   })
   on('process.run', ($, e) => {
     runs.push([...e.argv])
+    if (e.argv[1] === 'remote') return ran(REMOTE)
     if (e.argv[0] === 'git') return ran('feature-x\n')
-    if (e.argv[2] === 'show') return ran(JSON.stringify(trail()))
+    if (e.argv[2] === 'show') return ran(project('feature-x'))
+    if (e.argv[1] === 'api') return ran(JSON.stringify(trail()))
     if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
     if (e.argv[2] === 'approve') {
       isApproved = true
@@ -337,7 +360,7 @@ test('one press of Approve approves the trail and the pane then shows it approve
   await ui.press({ key: 'approve' })
   await clock.settle()
 
-  expect(runs.filter(argv => argv[2] === 'approve')).toEqual([['entire', 'trail', 'approve', '118']])
+  expect(runs.filter(argv => argv[2] === 'approve')).toEqual([['entire', 'trail', 'approve', 'rate-shop/118']])
   expect(toasts).toEqual(['Approved trail #118.'])
   expect(await ui.find({ key: 'approve' })).toBeUndefined()
   expect(await ui.find({ text: '✓ Approved' })).toBeDefined()
@@ -355,8 +378,10 @@ test('a behind branch gets a button that asks Claude to update it, only on its o
     },
   }
   on('process.run', ($, e) => {
+    if (e.argv[1] === 'remote') return ran(REMOTE)
     if (e.argv[0] === 'git') return ran('feature-x\n')
-    if (e.argv[2] === 'show') return ran(JSON.stringify(behind))
+    if (e.argv[2] === 'show') return ran(project(e.argv[4]))
+    if (e.argv[1] === 'api') return ran(JSON.stringify(behind))
     if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
     return ran('', 1, 'unexpected command')
   })
@@ -393,4 +418,40 @@ test('a behind branch gets a button that asks Claude to update it, only on its o
   expect(await pinned.find({ text: /teammate-branch/ })).toBeDefined()
   expect(await pinned.find({ key: 'update-branch' })).toBeUndefined()
   await pinned.unmount()
+})
+
+test("a merged branch's trail is found through the repository's trail list", async ($, on) => {
+  const clock = mock.clock(on)
+  const runs: string[][] = []
+  const merged = { ...TRAIL, status: 'merged' }
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    if (e.argv[1] === 'remote') return ran(REMOTE)
+    if (e.argv[0] === 'git') return ran('ann-1507-citations\n')
+    if (e.argv[2] === 'show') {
+      return ran('', 1, 'branch "ann-1507-citations" has no discoverable project trail')
+    }
+    if (e.argv.at(-1)?.includes('per_page')) {
+      return ran(JSON.stringify({ items: [{ number: 118, branch: null, original_branch: 'ann-1507-citations' }] }))
+    }
+    if (e.argv[1] === 'api') return ran(JSON.stringify(merged))
+    if (e.argv[2] === 'finding') return ran(JSON.stringify(FINDINGS))
+    return ran('', 1, 'unexpected command')
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 0, signal: null } }
+  })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  expect(runs).toContainEqual(['entire', 'api', '--to', 'cell', '/api/v1/trails/gh/analysis-ai/rate-shop?per_page=100'])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  expect(await ui.find({ type: 'Link', text: 'Trail #118' })).toBeDefined()
+  expect(await ui.find({ text: 'merged' })).toBeDefined()
+  expect(await ui.find({ key: 'approve' })).toBeUndefined()
+  await ui.unmount()
 })
