@@ -47,7 +47,10 @@ export type TrailFinding = {
 export type TrailFindings = { count: number; items: TrailFinding[] }
 
 export type Trail = {
+  // The change number, which the trail's repository numbers like a pull request.
   number: number
+  // `<repo>/<number>`, which per-change `entire trail` commands take.
+  selector: string
   title: string
   description: string
   url: string

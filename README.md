@@ -23,8 +23,8 @@ every session after it.
 
 - Claude Code 2.1.296 or later. The pane uses Claude Code's function hooks, which are in early access
   and can change between releases.
-- [`entire`](https://entire.io) installed and signed in (`entire auth status`), in a repository with
-  Entire Trails.
+- [`entire`](https://entire.io) 0.12.0 or later, installed and signed in (`entire auth status`), in a
+  GitHub repository with Entire Trails.
 - [`gh`](https://cli.github.com) signed in (`gh auth status`), for `/trail <PR number>`.
 
 ## Use it
@@ -42,10 +42,11 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
 
 ## What the pane shows
 
-- **Header:** trail number (a link to the trail), status, title, branch, head commit, and base.
+- **Header:** the branch's change number on its trail (a link to the change), status, title, branch,
+  head commit, and base.
 - **Description:** the trail's description, under the Approve and Refresh buttons. Press it to open
   or close the text. It starts closed.
-- **Approve:** approves an open trail with one press (`entire trail approve <n>`). It changes to
+- **Approve:** approves an open trail with one press (`entire trail approve <repo>/<n>`). It changes to
   **✓ Approved** once the trail's approvals gate passes.
 - **Scores:** one row for each runner in the repository's `.entire/runners/*.json` that reports a
   score, in file-name order. Each row has a bar or a Yes or No, and the change since the previous
@@ -69,8 +70,10 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
   button, because your session can't update it.
 - **Refresh:** reads the trail again and replays the score stream.
 
-The pane runs `entire trail watch` for live scores, and reads the trail again after other trail
-events and every 30 seconds.
+The pane finds the branch's change on its project trail (`entire trail show --branch`). For merged
+work, it looks in the repository's trail list instead. It reads the change's gates and checks with
+`entire api`, because no other `entire` command prints them. It runs `entire trail watch` for live
+scores, and reads the change again after other trail events and every 30 seconds.
 
 ## Develop it
 

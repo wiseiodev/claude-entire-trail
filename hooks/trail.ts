@@ -30,11 +30,38 @@ type Raw = any
 
 export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : '')
 
-export function pickTrail(raw: Raw): Trail {
+export const NO_TRAIL = /no trail found|no discoverable project trail/i
+
+/** The GitHub owner and repository in a git remote URL, such as git@github.com:acme/app.git. */
+export function parseRemote(url: string): { owner: string; name: string } | null {
+  const match = /[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url.trim())
+  return match ? { owner: match[1], name: match[2] } : null
+}
+
+/** The branch's change number in `entire trail show --branch --json`, the project trail that holds it. */
+export function changeOnBranch(project: Raw, repo: string, branch: string): number | null {
+  const change = (project.changes ?? []).find(
+    (one: Raw) =>
+      one.branch === branch && String(one.repository).toLowerCase() === repo.toLowerCase(),
+  )
+  return change?.number ?? null
+}
+
+/** The branch's change number in one page of the repository's trail list. Merged work keeps its branch only as `original_branch`. */
+export function changeInList(listed: Raw, branch: string): number | null {
+  const change = (listed.items ?? []).find(
+    (one: Raw) => one.branch === branch || one.original_branch === branch,
+  )
+  return change?.number ?? null
+}
+
+// `raw` is a change's detail from `entire api`: the old `entire trail show --json` fields and more.
+export function pickTrail(raw: Raw, repo: string): Trail {
   return {
     number: raw.number,
+    selector: `${repo}/${raw.number}`,
     title: raw.title,
-    description: String(raw.body ?? '').trim(),
+    description: String(raw.body_document?.text_snapshot ?? '').trim(),
     url: raw.url,
     status: raw.status,
     base: raw.base,
