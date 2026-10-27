@@ -2,7 +2,12 @@ export type TrailPoint = {
   sha: string
   percent_value: number | null
   boolean_value: boolean | null
+  // small, medium or large, for a score whose value type is size.
+  size_value: string | null
 }
+
+// An agent's latest run on the change, which can be newer than its last score.
+export type TrailRun = { status: string; sha: string; error: string | null }
 
 export type TrailMonitor = TrailPoint & {
   key: string
@@ -11,6 +16,9 @@ export type TrailMonitor = TrailPoint & {
   polarity: string
   rationale: string
   history: TrailPoint[]
+  // Set for a score from an agent set up on Entire, not from a runner file.
+  agentId?: string
+  run?: TrailRun | null
 }
 
 export type TrailRunnerMonitor = { key: string; label: string; value_type: string; polarity: string }
@@ -38,8 +46,10 @@ export type TrailFinding = {
   title: string
   file: string | null
   line: number | null
-  // The runner that posted it, or null for a person's finding.
+  // The runner that posted it, or null for a person's or an agent's finding.
   runnerId: string | null
+  // The review that posted it, which names the agent whose run made it.
+  reviewId: string | null
   // Why it was resolved or dismissed, as recorded on the finding.
   reason: string | null
 }
@@ -75,6 +85,10 @@ export type TrailView =
       findings: TrailFindings | null
       resolved: TrailFindings | null
       runners: TrailRunner[]
+      // The change's agents on Entire, each with its latest score.
+      agents: TrailMonitor[]
+      // The agent name for each review whose run Entire returned.
+      reviewers: Record<string, string>
     }
 
 declare module 'claude-code' {

@@ -1,7 +1,7 @@
 {
   "name": "entire-trail",
-  "version": "0.5.0",
-  "description": "A live pane with a branch's Entire Trail: scores, gates, CI checks and findings",
+  "version": "0.6.0",
+  "description": "A live pane with a branch's Entire Trail: agent scores, gates, CI checks and findings",
   "author": { "name": "Daniel Wise", "url": "https://github.com/wiseiodev" },
   "homepage": "https://github.com/wiseiodev/claude-entire-trail",
   "repository": "https://github.com/wiseiodev/claude-entire-trail",
