@@ -7,19 +7,25 @@ import {
   NO_TRAIL,
   applyMonitor,
   askVerb,
+  barShare,
   changeInList,
   changeOnBranch,
   checkTone,
   checksSummary,
+  findingAuthor,
   isImprovable,
   monitorDelta,
   monitorTone,
   parseRemote,
   parseWatchLine,
+  pickAgents,
   pickFindings,
   pickRunner,
   pickTrail,
   pointValue,
+  reviewRuns,
+  runNote,
+  runReviewId,
   runnerName,
   scorePrompt,
   scoreRows,
@@ -65,6 +71,8 @@ type Repo = { owner: string; name: string }
 
 // Entire's API for one repository's trails, which `entire api` signs in to.
 const trailsPath = (repo: Repo) => `/api/v1/trails/gh/${repo.owner}/${repo.name}`
+// One agent run, in the project the GitHub owner names.
+const runPath = (repo: Repo, runId: string) => `/api/v1/gh/${repo.owner}/runs/${runId}`
 
 export const register: Register = on => {
   // Built in session.start, so its timers and the score stream run on that hook's `$`.
@@ -78,6 +86,9 @@ export const register: Register = on => {
     let eventTimer: Timer | null = null
     let isRefreshing = false
     let queued: { isForced: boolean } | null = null
+    // A finished run and the review it posted don't change, so each is read once per session.
+    const runReviews = new Map<string, string | null>()
+    const reviewers: Record<string, string> = {}
 
     async function entireJson(args: string[]) {
       const ran = await $.process.run(['entire', ...args], { timeoutMs: CLI_TIMEOUT_MS })
@@ -131,6 +142,31 @@ export const register: Register = on => {
         ),
       )
       return runners.filter(runner => runner !== null)
+    }
+
+    // Entire's findings name no agent, so each review's agent comes from the run that posted it.
+    async function findReviewers(raw: unknown, reviewIds: string[], repo: Repo | null) {
+      if (!repo) return { ...reviewers }
+      const project = repo
+      await Promise.all(
+        [...new Set(reviewIds)]
+          .filter(reviewId => !(reviewId in reviewers))
+          .map(async reviewId => {
+            for (const { runId, agent } of reviewRuns(raw, reviewId)) {
+              if (!runReviews.has(runId)) {
+                const run = await entireJson(['api', '--to', 'cell', runPath(project, runId)]).catch(
+                  () => null,
+                )
+                if (run) runReviews.set(runId, runReviewId(run))
+              }
+              if (runReviews.get(runId) === reviewId) {
+                reviewers[reviewId] = agent
+                return
+              }
+            }
+          }),
+      )
+      return { ...reviewers }
     }
 
     function stopWatch() {
@@ -198,17 +234,17 @@ export const register: Register = on => {
           await update($, view, (): TrailView => ({ status: 'loading', branch: current }))
         }
         let trail: Trail | null
+        let detail: unknown = null
+        let repo: Repo | null = null
         try {
-          const repo = await originRepo()
+          repo = await originRepo()
           if (!repo) throw new Error('this checkout has no GitHub origin remote')
           const number = await findChange(current, repo)
-          trail =
+          detail =
             number === null
               ? null
-              : pickTrail(
-                  await entireJson(['api', '--to', 'cell', `${trailsPath(repo)}/${number}`]),
-                  repo.name,
-                )
+              : await entireJson(['api', '--to', 'cell', `${trailsPath(repo)}/${number}`])
+          trail = detail === null ? null : pickTrail(detail, repo.name)
         } catch (error) {
           stopWatch()
           const message = error instanceof Error ? error.message : String(error)
@@ -230,6 +266,10 @@ export const register: Register = on => {
           ),
           readRunners().catch(() => []),
         ])
+        const reviewIds = [...(findings?.items ?? []), ...(resolved?.items ?? [])].flatMap(
+          finding => (finding.reviewId && !finding.runnerId ? [finding.reviewId] : []),
+        )
+        const named = await findReviewers(detail, reviewIds, repo)
         await update($, view, (): TrailView => ({
           status: 'ready',
           branch: current,
@@ -238,6 +278,8 @@ export const register: Register = on => {
           findings,
           resolved,
           runners,
+          agents: pickAgents(detail),
+          reviewers: named,
         }))
         if (watch?.trail !== trail.selector) startWatch(trail.selector)
       } catch (error) {
@@ -356,8 +398,8 @@ export const register: Register = on => {
       )
     }
 
-    const { trail, findings, resolved, runners } = current
-    const scores = scoreRows(runners, await read($, monitors))
+    const { trail, findings, resolved, runners, agents, reviewers } = current
+    const scores = scoreRows(runners, await read($, monitors), agents)
     const open = await read($, expanded)
     const labelWidth = Math.max(0, ...scores.map(score => score.label.length))
     // What the row leaves for the bar after the toggle, dot, label, delta, value and spaces.
@@ -414,32 +456,49 @@ export const register: Register = on => {
         {!isScored && <Text dimColor>No runner scores yet.</Text>}
         {isScored && !isHeadScored && (
           <Text dimColor>
-            Runners haven't scored {shortSha(trail.headSha)} yet. Showing the last scores.
+            Nothing has scored {shortSha(trail.headSha)} yet. Showing the last scores.
           </Text>
         )}
         {scores.map(score => {
           const tone = TONE_COLOR[monitorTone(score)]
           const delta = monitorDelta(score)
-          const filled =
-            score.value_type === 'percent' && score.percent_value != null
-              ? Math.round((Math.max(0, Math.min(100, score.percent_value)) / 100) * barWidth)
-              : 0
+          const note = runNote(score)
+          const filled = Math.round((barShare(score) ?? 0) * barWidth)
           const isOpen = open.includes(score.key)
+          const scorer = score.agentId ? 'agent' : 'runner'
+          const raised = score.agentId
+            ? (findings?.items ?? []).filter(
+                finding => findingAuthor(finding, runners, reviewers) === score.label,
+              ).length
+            : 0
           return (
             <Box key={`score-${score.key}`} flexDirection="column">
               <Button key={`toggle-${score.key}`} plain onPress={() => toggle(score.key)}>
                 <Text dimColor>{isOpen ? '▾' : '▸'}</Text> <Text color={tone}>●</Text>{' '}
                 {score.label.padEnd(labelWidth)} <Text color={tone}>{'█'.repeat(filled)}</Text>
                 <Text dimColor>{'░'.repeat(barWidth - filled)}</Text>{' '}
-                <Text color={delta?.isImproved ? 'success' : 'error'}>
-                  {(delta?.text ?? '').padStart(7)}
-                </Text>{' '}
+                {note ? (
+                  <Text color={note === 'failed' ? 'error' : 'warning'}>{note.padStart(7)}</Text>
+                ) : (
+                  <Text color={delta?.isImproved ? 'success' : 'error'}>
+                    {(delta?.text ?? '').padStart(7)}
+                  </Text>
+                )}{' '}
                 <Text bold>{pointValue(score.value_type, score).padStart(4)}</Text>
               </Button>
               {isOpen && (
                 <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
+                  {note === 'scoring' && (
+                    <Text dimColor>Entire is scoring {shortSha(score.run?.sha)} now.</Text>
+                  )}
+                  {note === 'failed' && (
+                    <Text color="error">
+                      This agent's run on {shortSha(score.run?.sha)} ended {score.run?.status}
+                      {score.run?.error ? `: ${score.run.error}` : '.'}
+                    </Text>
+                  )}
                   {score.history.length === 0 ? (
-                    <Text dimColor>This runner hasn't scored the trail yet.</Text>
+                    <Text dimColor>This {scorer} hasn't scored the trail yet.</Text>
                   ) : (
                     <Text>
                       {score.rationale}
@@ -450,6 +509,11 @@ export const register: Register = on => {
                     <Text dimColor>
                       History by commit:{' '}
                       {score.history.map(point => pointValue(score.value_type, point)).join(' → ')}
+                    </Text>
+                  )}
+                  {raised > 0 && (
+                    <Text dimColor>
+                      It raised {raised} of the open findings below.
                     </Text>
                   )}
                   {isImprovable(score) && (
@@ -584,7 +648,9 @@ export const register: Register = on => {
               {finding.file
                 ? `${finding.file}${finding.line ? `:${finding.line}` : ''}`
                 : 'General'}
-              {finding.runnerId ? ` · ${runnerName(runners, finding.runnerId)}` : ''}
+              {findingAuthor(finding, runners, reviewers)
+                ? ` · ${findingAuthor(finding, runners, reviewers)}`
+                : ''}
             </Text>
           </Text>
           <Box flexDirection="column" paddingLeft={2}>

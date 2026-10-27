@@ -455,3 +455,99 @@ test("a merged branch's trail is found through the repository's trail list", asy
   expect(await ui.find({ key: 'approve' })).toBeUndefined()
   await ui.unmount()
 })
+
+// Agents set up on Entire, as the change's detail lists them: latest reading, history newest first, and latest run.
+const REVIEW_ID = '01M5ZH763RQ77FAYTRMYEHDZYY'
+const REVIEW_RUN = '01M5ZH4G93BQH1M8YCY0VYGZCF'
+const agentEntry = (
+  id: string,
+  name: string,
+  signal: { value_type: string; polarity: string },
+  history: Record<string, unknown>[],
+  run = { status: 'succeeded', head_sha: HEAD, error: null as string | null },
+) => ({
+  agent: { id, name },
+  signal,
+  reading: { ...history[0], rationale: `${name} notes.` },
+  latest_run: run,
+  history,
+})
+const AGENT_TRAIL = {
+  ...TRAIL,
+  agents: [
+    agentEntry('01M5Z6HANBR9CMWY4D5D5PZS2V', 'Confidence', { value_type: 'percent', polarity: 'higher_is_better' }, [
+      { percent_value: 90, head_sha: HEAD, run_id: '01M5ZGNFM0K48M107YD136JS5X', updated_at: '2026-10-27T20:28:10.784Z' },
+      { percent_value: 94, head_sha: '1bd0835', run_id: '01M5ZAW4N9XG06S23GHNWNY2RP', updated_at: '2026-10-27T18:47:12.297Z' },
+    ]),
+    agentEntry('01M5Z6HBWARVRNZ0Q8THQRVXTC', 'Drift', { value_type: 'size', polarity: 'lower_is_better' }, [
+      { size_value: 'medium', head_sha: HEAD, run_id: '01M5ZGNFM0K48M107YD136JS5Y', updated_at: '2026-10-27T20:29:01.000Z' },
+      { size_value: 'small', head_sha: '1bd0835', run_id: '01M5ZAW4N9XG06S23GHNWNY2RQ', updated_at: '2026-10-27T18:48:00.000Z' },
+    ]),
+    agentEntry('01M5Z6HCJPZB30PD9WYPY1T444', 'Bug Review', { value_type: 'boolean', polarity: 'lower_is_better' }, [
+      { boolean_value: true, head_sha: HEAD, run_id: REVIEW_RUN, updated_at: '2026-10-27T20:35:53.072Z' },
+    ]),
+    agentEntry(
+      '01M5Z6HEYN5CRWTH2CRQ052HWN',
+      'Security',
+      { value_type: 'percent', polarity: 'lower_is_better' },
+      [{ percent_value: 5, head_sha: '1bd0835', run_id: '01M5ZAW4N9XG06S23GHNWNY2RR', updated_at: '2026-10-27T18:46:00.000Z' }],
+      { status: 'running', head_sha: HEAD, error: null },
+    ),
+  ],
+}
+// Entire posts an agent's findings under one automation actor, so only the review ties a finding to its agent.
+const AGENT_FINDINGS = {
+  counts: { Open: 1 },
+  findings: [
+    {
+      severity: 'medium',
+      body: 'A classifier timeout skips the threat gate.',
+      actorId: 'automation:aut_01M5Z6D6MZJBS09E0R1FPFXD5B',
+      reviewId: REVIEW_ID,
+      location: { filePath: 'src/safety/gate.ts', startLine: 54 },
+    },
+  ],
+}
+
+test('agents on Entire score the change and name the findings they raise', async ($, on) => {
+  const clock = mock.clock(on)
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    if (e.argv[1] === 'rev-parse') return ran('/repo\n')
+    if (e.argv[1] === 'remote') return ran(REMOTE)
+    if (e.argv[0] === 'git') return ran('feature-x\n')
+    if (e.argv[2] === 'show') return ran(project('feature-x'))
+    if (e.argv[4] === `/api/v1/gh/analysis-ai/runs/${REVIEW_RUN}`) {
+      return ran(JSON.stringify({ id: REVIEW_RUN, review_changes_result: { review_id: REVIEW_ID } }))
+    }
+    if (e.argv[4] === DETAIL) return ran(JSON.stringify(AGENT_TRAIL))
+    if (e.argv[2] === 'finding') {
+      return ran(JSON.stringify(e.argv.includes('resolved') ? { counts: {}, findings: [] } : AGENT_FINDINGS))
+    }
+    return ran('', 1, 'unexpected command')
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 0, signal: null } }
+  })
+  on('fs.list', () => ({ value: [] }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+  expect(await ui.find({ key: 'toggle-01M5Z6HANBR9CMWY4D5D5PZS2V', text: /Confidence.*▼4.*90%/ })).toBeDefined()
+  expect(await ui.find({ key: 'toggle-01M5Z6HBWARVRNZ0Q8THQRVXTC', text: /Drift.*▲.*Medium/ })).toBeDefined()
+  expect(await ui.find({ key: 'toggle-01M5Z6HEYN5CRWTH2CRQ052HWN', text: /Security.*scoring.*5%/ })).toBeDefined()
+  expect(await ui.find({ text: 'src/safety/gate.ts:54 · Bug Review' })).toBeDefined()
+
+  await ui.press({ key: 'toggle-01M5Z6HCJPZB30PD9WYPY1T444' })
+  expect(await ui.find({ text: 'It raised 1 of the open findings below.' })).toBeDefined()
+  expect(await ui.find({ key: 'ask-01M5Z6HCJPZB30PD9WYPY1T444', text: 'Fix this with Claude' })).toBeDefined()
+  await ui.press({ key: 'toggle-01M5Z6HEYN5CRWTH2CRQ052HWN' })
+  expect(await ui.find({ text: 'Entire is scoring 4f46aa0 now.' })).toBeDefined()
+  await ui.unmount()
+})

@@ -6,7 +6,7 @@
     {
       "name": "entire-trail",
       "source": "./",
-      "description": "A live pane with a branch's Entire Trail: scores, gates, CI checks and findings"
+      "description": "A live pane with a branch's Entire Trail: agent scores, gates, CI checks and findings"
     }
   ]
 }

@@ -1,8 +1,9 @@
 # Entire Trail for Claude Code
 
 A Claude Code pane for [Entire](https://entire.io) Trails. It shows the open trail for your session's
-branch, or for any branch or pull request you name: runner scores and how they changed, gates, CI
-checks, and open findings. It updates live as runners report.
+branch, or for any branch or pull request you name: agent and runner scores and how they changed,
+gates, CI checks, and open findings with the agent that raised each one. It updates live as Entire
+reports.
 
 It is the Claude Code version of [Entire Trails for Orca](https://github.com/wiseiodev/orca-entire-trails).
 It drives the `entire` and `gh` CLIs you already use. Nothing talks to Entire or GitHub except those
@@ -49,18 +50,21 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
 - **Approve:** approves an open trail with one press (`entire trail approve <repo>/<n>`). It changes to
   **✓ Approved** once the trail's approvals gate passes.
 - **Scores:** one row for each runner in the repository's `.entire/runners/*.json` that reports a
-  score, in file-name order. Each row has a bar or a Yes or No, and the change since the previous
-  scored commit. A runner that has not scored yet shows —. The pane reads the runner files again on
-  each refresh, so a runner you add shows without a restart. Press a score to read the runner's notes
-  and its history by commit.
+  score, in file-name order, then one row for each agent the project sets up on Entire, in the order
+  Entire lists them. Each row has a bar, a Yes or No, or a Small, Medium or Large, and the change since
+  the previous scored commit. A score that has not come in yet shows —. While an agent scores a new
+  push, its row says **scoring** and keeps the last score; a run that failed says **failed** and why.
+  The pane reads the runner files again on each refresh, so a runner you add shows without a
+  restart. Press a score to read its notes, its history by commit, and how many open findings an
+  agent raised.
 - **Raise or lower a score with Claude:** a button under an open score that can still improve. It puts
-  a prompt with the runner's notes in your input box. The prompt follows the runner's value type and
-  polarity, and names the runner's file so Claude reads what the runner checks. Read it, then press
-  Enter to send it.
+  a prompt with the score's notes in your input box. The prompt follows the score's value type and
+  polarity, and for a runner names its file so Claude reads what the runner checks. Read it, then
+  press Enter to send it.
 - **Gates, Checks, Findings:** the trail's gates, every CI check (failures first), and open agent
   findings with file and line. A gate that review runners decide, such as **Findings**, names those
-  runners, and each finding names the runner that posted it. The names come from each runner file's
-  `display_name`.
+  runners. Each finding names the runner or agent that posted it: a runner by its file's
+  `display_name`, an agent by its name on Entire.
 - **Resolved findings:** press **▸ N resolved** under the open findings to read the resolved ones,
   each with the note it was resolved with. These include findings on earlier commits, because a fix
   usually changes the code a finding was about.
@@ -71,9 +75,11 @@ Trail numbers and PR numbers are different: `/trail 880` means PR #880.
 - **Refresh:** reads the trail again and replays the score stream.
 
 The pane finds the branch's change on its project trail (`entire trail show --branch`). For merged
-work, it looks in the repository's trail list instead. It reads the change's gates and checks with
-`entire api`, because no other `entire` command prints them. It runs `entire trail watch` for live
-scores, and reads the change again after other trail events and every 30 seconds.
+work, it looks in the repository's trail list instead. It reads the change's gates, checks and agent
+scores with `entire api`, because no other `entire` command prints them. Entire's findings don't name
+the agent that raised them, so the pane reads the agent run that posted each finding's review, once
+per run. It runs `entire trail watch` for live runner scores, and reads the change again after other
+trail events, such as an agent starting or finishing a run, and every 30 seconds.
 
 ## Develop it
 
